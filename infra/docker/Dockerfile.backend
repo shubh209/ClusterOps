@@ -1,0 +1,21 @@
+# Multi-stage build: compiles any of the three Go services
+# depending on the SERVICE build arg (server | ingestion | simulator)
+# ─────────────────────────────────────────────────────────────────
+FROM golang:1.22-alpine AS builder
+
+ARG SERVICE=server
+WORKDIR /src
+
+# Cache deps separately from source
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
+    -o /out/service ./cmd/${SERVICE}
+
+# ─── Runtime image ────────────────────────────────────────────────
+FROM alpine:3.19 AS runtime
+RUN apk add --no-cache wget
+COPY --from=builder /out/service /service
+ENTRYPOINT ["/service"]

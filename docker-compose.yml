@@ -1,0 +1,261 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ClusterOps — full local dev stack
+#
+# All bind mounts have been replaced with baked images to work around a
+# Docker Desktop bug where colons in the host path break volume parsing.
+#
+# Services:
+#   Infrastructure:  postgres, redis, zookeeper, kafka
+#   Observability:   prometheus, grafana, jaeger, otel-collector
+#   Application:     api, ingestion, simulator
+#   Frontend:        frontend (Vite dev server)
+#
+# Usage:
+#   make dev          — start everything
+#   make logs         — tail all logs
+#   make down         — stop and remove containers
+# ─────────────────────────────────────────────────────────────────────────────
+
+networks:
+  clusterops:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:
+  prometheus_data:
+  grafana_data:
+
+# ─── Shared env ───────────────────────────────────────────────────────────────
+x-backend-env: &backend-env
+  POSTGRES_HOST: postgres
+  POSTGRES_PORT: "5432"
+  POSTGRES_USER: clusterops
+  POSTGRES_PASSWORD: clusterops
+  POSTGRES_DB: clusterops
+  POSTGRES_SSLMODE: disable
+  REDIS_ADDR: redis:6379
+  REDIS_PASSWORD: ""
+  KAFKA_BROKERS: kafka:9092
+  OTEL_EXPORTER_OTLP_ENDPOINT: otel-collector:4317
+
+# ─── Infrastructure ───────────────────────────────────────────────────────────
+services:
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: clusterops
+      POSTGRES_PASSWORD: clusterops
+      POSTGRES_DB: clusterops
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks: [clusterops]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U clusterops"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save "" --appendonly no
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks: [clusterops]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.1
+    restart: unless-stopped
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    networks: [clusterops]
+    healthcheck:
+      test: ["CMD-SHELL", "echo ruok | timeout 2 bash -c 'cat > /dev/tcp/localhost/2181' && echo imok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.1
+    restart: unless-stopped
+    depends_on:
+      zookeeper:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_LOG_RETENTION_HOURS: 1
+      KAFKA_LOG_SEGMENT_BYTES: 10485760
+    ports:
+      - "9093:9093"   # external access (host)
+    networks: [clusterops]
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-broker-api-versions --bootstrap-server localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 15
+      start_period: 30s
+
+  # ─── Observability ───────────────────────────────────────────────────────────
+  # Config files are baked into images at build time (no bind mounts) to work
+  # around Docker Desktop's colon-in-path volume parsing bug.
+
+  otel-collector:
+    build:
+      context: ./infra
+      dockerfile: docker/Dockerfile.otel
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    ports:
+      - "4317:4317"   # gRPC OTLP
+      - "4318:4318"   # HTTP OTLP
+      - "8889:8889"   # Prometheus metrics scraped by Prometheus
+    networks: [clusterops]
+    depends_on: [jaeger]
+
+  prometheus:
+    build:
+      context: ./infra
+      dockerfile: docker/Dockerfile.prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-lifecycle"
+    volumes:
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks: [clusterops]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  grafana:
+    build:
+      context: ./infra
+      dockerfile: docker/Dockerfile.grafana
+    restart: unless-stopped
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_FEATURE_TOGGLES_ENABLE: publicDashboards
+    volumes:
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    networks: [clusterops]
+    depends_on: [prometheus]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    restart: unless-stopped
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "14317:4317"    # OTLP gRPC (avoid conflict with otel-collector)
+    networks: [clusterops]
+
+  # ─── Application ─────────────────────────────────────────────────────────────
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: ../infra/docker/Dockerfile.backend
+      args:
+        SERVICE: server
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      API_ADDR: ":8080"
+    ports:
+      - "8080:8080"
+    networks: [clusterops]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  ingestion:
+    build:
+      context: ./backend
+      dockerfile: ../infra/docker/Dockerfile.backend
+      args:
+        SERVICE: ingestion
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+    networks: [clusterops]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+
+  simulator:
+    build:
+      context: ./backend
+      dockerfile: ../infra/docker/Dockerfile.backend
+      args:
+        SERVICE: simulator
+    restart: unless-stopped
+    environment:
+      KAFKA_BROKERS: kafka:9092
+    networks: [clusterops]
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: .
+      dockerfile: ./infra/docker/Dockerfile.frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    networks: [clusterops]
+    environment:
+      VITE_API_TARGET: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy

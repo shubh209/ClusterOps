@@ -1,0 +1,69 @@
+# OpenTelemetry Collector config
+# Receives traces from api + ingestion (OTLP gRPC/HTTP)
+# Exports traces to Jaeger and exposes a Prometheus metrics endpoint
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+  # Scrape the collector's own internal metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: otel-collector
+          scrape_interval: 15s
+          static_configs:
+            - targets: [localhost:8888]
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  # Add resource attributes to every span
+  resource:
+    attributes:
+      - key: deployment.environment
+        value: local
+        action: upsert
+
+  # Drop health-check spans to reduce noise
+  filter/drop_health:
+    spans:
+      exclude:
+        match_type: strict
+        attributes:
+          - key: http.route
+            value: /health
+
+exporters:
+  # Forward traces to Jaeger all-in-one
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Expose metrics for Prometheus to scrape on :8889
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: otelcol
+
+  # Log pipeline health to stdout (useful during dev)
+  logging:
+    verbosity: normal
+
+service:
+  pipelines:
+    traces:
+      receivers:  [otlp]
+      processors: [resource, filter/drop_health, batch]
+      exporters:  [otlp/jaeger, logging]
+
+    metrics:
+      receivers:  [prometheus]
+      processors: [batch]
+      exporters:  [prometheus]

@@ -1,0 +1,143 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red",   "value": null },
+              { "color": "yellow","value": 50 },
+              { "color": "green", "value": 80 }
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "orientation": "auto", "reduceOptions": { "calcs": ["lastNotNull"] }, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "title": "API Cache Hit Rate",
+      "type": "gauge",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "rate(clusterops_cache_hits_total[1m]) / (rate(clusterops_cache_hits_total[1m]) + rate(clusterops_cache_misses_total[1m])) * 100",
+          "legendFormat": "Hit Rate %",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "reqps" } },
+      "gridPos": { "h": 6, "w": 8, "x": 4, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "list", "placement": "bottom" } },
+      "title": "API Request Rate by Path",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "expr": "sum by (path) (rate(clusterops_api_requests_total[1m]))",
+          "legendFormat": "{{path}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "s", "color": { "mode": "palette-classic" } } },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 0 },
+      "id": 3,
+      "title": "API Request Latency (p50 / p95 / p99)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum by (le, path) (rate(clusterops_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50 {{path}}", "refId": "A"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, path) (rate(clusterops_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95 {{path}}", "refId": "B"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le, path) (rate(clusterops_api_request_duration_seconds_bucket[5m])))",
+          "legendFormat": "p99 {{path}}", "refId": "C"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "gridPos": { "h": 6, "w": 4, "x": 0, "y": 6 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] } },
+      "title": "SSE Connected Clients",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "clusterops_sse_connected_clients",
+          "legendFormat": "Clients",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "gridPos": { "h": 6, "w": 8, "x": 4, "y": 6 },
+      "id": 5,
+      "title": "Cache Hits vs Misses",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (resource) (rate(clusterops_cache_hits_total[1m]))",
+          "legendFormat": "hit: {{resource}}", "refId": "A"
+        },
+        {
+          "expr": "sum by (resource) (rate(clusterops_cache_misses_total[1m]))",
+          "legendFormat": "miss: {{resource}}", "refId": "B"
+        }
+      ]
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 3 }, { "color": "red", "value": 5 } ] } } },
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 6 },
+      "id": 6,
+      "title": "HTTP Error Rate by Path (5xx)",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "sum by (path) (rate(clusterops_api_requests_total{status=~\"5..\"}[5m]))",
+          "legendFormat": "{{path}}", "refId": "A"
+        }
+      ]
+    }
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["clusterops"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "ClusterOps — API & Cache",
+  "uid": "clusterops-api",
+  "version": 1
+}
